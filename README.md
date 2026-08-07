@@ -55,13 +55,13 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 | `/map_command` | `std_msgs/String` | `start` · `save <name>` · `load <name>` · `stop` |
 | `/map_state` | `std_msgs/String` | 当前状态字符串 |
 | `/map` | `nav_msgs/OccupancyGrid` | 栅格地图（建图实时 / 载图静态） |
-| `/get_map_files` | Service | 返回地图逻辑名列表（逗号分隔） |
+| `/get_map_files` | `std_srvs/srv/Trigger` | `message` 为地图逻辑名列表（逗号分隔） |
 
 ### 地图命名与文件
 
-- 逻辑名：仅英文，建议 `^[A-Za-z][A-Za-z0-9_]{0,31}$`
-- 目录：`~/data/maps/`
-- 文件：`{name}_2dmap.pgm`、`{name}_2dmap.yaml`（可选序列化文件同前缀）
+- 逻辑名：仅英文，`^[A-Za-z][A-Za-z0-9_]{0,31}$`
+- 目录：`~/data/maps/`（可用参数 `maps_dir` 覆盖）
+- 文件：`{name}_2dmap.pgm`、`{name}_2dmap.yaml`
 
 示例：`save office_01` → `~/data/maps/office_01_2dmap.pgm` + `.yaml`
 
@@ -74,66 +74,94 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 
 ### 无真机 / 无传感器时（云服务器）
 
-推荐分两级，不必一上来上完整仿真：
-
-1. **协议 + 存盘闭环（优先）**  
-   mock 节点响应 `/map_command`，发布简易 `/map`，把 pgm/yaml 写到 `~/data/maps/`。  
-   用 axion-console 连 rosbridge，即可看到栅格、验证保存/列表/载入。
-
-2. **可选：bag 回放**  
-   有 `/scan` + `/odom`（及 TF）的 bag 时，`ros2 bag play` + slam_toolbox 做近似真建图。
-
-3. **可选：Gazebo headless**  
-   无 GUI 云主机可用无头仿真；资源占用较大，适合第二步再上。
-
-前端 **可以** 展示效果：console 只订阅 OccupancyGrid，不关心地图来自真机、仿真、bag 还是 mock。
+| 阶段 | 状态 | 说明 |
+|------|------|------|
+| **① mock 协议+存盘** | ✅ 已实现 | `map_manager_node`：假 OccupancyGrid + save/load |
+| **② bag 回放** | 可选 | `/scan`+`/odom` bag + slam_toolbox |
+| **③ Gazebo headless** | 可选 | 无头仿真 |
 
 ---
 
-## 技术栈
+## 仓库结构
 
-- ROS 2 **Humble**
-- 核心节点：建议 **C++（rclcpp）**；launch / 工具脚本：**Python**
-- SLAM：优先 **slam_toolbox**
-- 传输：与 console 之间经 **rosbridge_server**
+本仓库是 **colcon 工作空间**，包在 `src/axion_slam`：
 
----
-
-## 快速开始（草稿）
-
-> 包结构落地后补全具体包名与 launch 文件名。
-
-```bash
-# 依赖示例（主机已装 Humble）
-sudo apt install ros-humble-rosbridge-suite ros-humble-slam-toolbox
-
-# 启动
-source /opt/ros/humble/setup.bash
-
-# 默认监听 0.0.0.0:9090
-ros2 launch rosbridge_server rosbridge_websocket_launch.xm
-
-# 只给本机 Nginx 反代用(更安全,推荐)
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=127.0.0.1 port:=9090
-
-# 后台启动
-nohup ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=127.0.0.1 port:=9090 > ~/rosbridge.log 2>&1 &
-
-# 验证端口启动
-ss -lntp | grep 9090
-ros2 node list | grep -i rosbridge
-
-# 工作空间编译（示意）
-cd ~/ws && colcon build --packages-select axion_slam
-source install/setup.bash
-
-# 启动（将包含 rosbridge + axion-slam，端口 9090）
-ros2 launch axion_slam bringup.launch.py
-
-# 浏览器打开 axion-console，连接 ws://<云服务器公网IP>:9090
+```text
+axion-slam/
+├── README.md
+└── src/axion_slam/
+    ├── package.xml
+    ├── CMakeLists.txt
+    ├── include/axion_slam/map_io.hpp
+    ├── src/map_io.cpp
+    ├── src/map_manager_node.cpp
+    ├── launch/mock.launch.py      # 仅 map_manager
+    ├── launch/bringup.launch.py  # rosbridge + map_manager
+    └── config/map_manager.yaml
 ```
 
-安全组需放行 **9090/TCP**（仅内网或加鉴权，勿裸奔公网）。
+---
+
+## 快速开始
+
+### 依赖（Humble 主机）
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-humble-rosbridge-suite \
+  ros-humble-slam-toolbox \
+  ros-humble-nav-msgs \
+  ros-humble-std-srvs
+```
+
+### 编译
+
+```bash
+# 若已 clone 到 ~/axion-slam
+cd ~/axion-slam
+source /opt/ros/humble/setup.bash
+colcon build --packages-select axion_slam
+source install/setup.bash
+```
+
+### 启动
+
+```bash
+# 推荐：mock + rosbridge（给 console 联调）
+ros2 launch axion_slam bringup.launch.py
+
+# 仅本机反代场景，rosbridge 只绑 127.0.0.1：
+ros2 launch axion_slam bringup.launch.py rosbridge_address:=127.0.0.1
+
+# 只要节点、自己另起 rosbridge：
+ros2 launch axion_slam mock.launch.py
+```
+
+### 命令行冒烟（无需浏览器）
+
+```bash
+# 另开终端
+source ~/axion-slam/install/setup.bash
+
+ros2 topic echo /map_state --once
+ros2 topic pub --once /map_command std_msgs/msg/String "{data: 'start'}"
+ros2 topic echo /map --once   # 应看到 OccupancyGrid
+
+ros2 topic pub --once /map_command std_msgs/msg/String "{data: 'save office_01'}"
+ros2 service call /get_map_files std_srvs/srv/Trigger {}
+ls ~/data/maps/
+
+ros2 topic pub --once /map_command std_msgs/msg/String "{data: 'stop'}"
+```
+
+### 接 axion-console
+
+1. 设置 → 机器人 IP 填云主机公网 IP（console 会连 `ws://IP:9090`）
+2. 打开 **2D 控制台** `/robot/amr`
+3. 点「开始建图」→ 应看到逐渐展开的房间栅格 →「保存」英文名 →「载入」列表可见
+
+安全组需放行 **9090/TCP**（或 SSH 隧道：`ssh -L 9090:127.0.0.1:9090 user@host`，console 填 `127.0.0.1`）。
 
 ---
 

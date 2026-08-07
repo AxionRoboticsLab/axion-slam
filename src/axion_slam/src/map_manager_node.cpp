@@ -1,0 +1,352 @@
+#include "axion_slam/map_io.hpp"
+
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+using namespace std::chrono_literals;
+
+namespace
+{
+
+std::string expand_home_path(const std::string & path)
+{
+  if (path.empty() || path[0] != '~') {
+    return path;
+  }
+  const char * home = std::getenv("HOME");
+  if (!home) {
+    home = std::getenv("USERPROFILE");
+  }
+  if (!home) {
+    return path;
+  }
+  if (path.size() == 1) {
+    return std::string(home);
+  }
+  if (path[1] == '/' || path[1] == '\\') {
+    return std::string(home) + path.substr(1);
+  }
+  return path;
+}
+
+std::string trim_copy(const std::string & s)
+{
+  const auto start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) {
+    return "";
+  }
+  const auto end = s.find_last_not_of(" \t\r\n");
+  return s.substr(start, end - start + 1);
+}
+
+}  // namespace
+
+class MapManagerNode : public rclcpp::Node
+{
+public:
+  MapManagerNode()
+  : Node("map_manager")
+  {
+    maps_dir_ = expand_home_path(
+      declare_parameter<std::string>("maps_dir", "~/data/maps"));
+    map_topic_ = declare_parameter<std::string>("map_topic", "/map");
+    publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 2.0);
+    mock_width_ = declare_parameter<int>("mock_width", 200);
+    mock_height_ = declare_parameter<int>("mock_height", 200);
+    mock_resolution_ = declare_parameter<double>("mock_resolution", 0.05);
+
+    map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic_, rclcpp::QoS(1).transient_local());
+    state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", 10);
+
+    cmd_sub_ = create_subscription<std_msgs::msg::String>(
+      "/map_command", 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        handle_command(msg->data);
+      });
+
+    get_maps_srv_ = create_service<std_srvs::srv::Trigger>(
+      "/get_map_files",
+      [this](
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+      {
+        const auto names = axion_slam::list_map_names(maps_dir_);
+        response->success = true;
+        if (names.empty()) {
+          response->message = "";
+        } else {
+          response->message = names[0];
+          for (size_t i = 1; i < names.size(); ++i) {
+            response->message += ",";
+            response->message += names[i];
+          }
+        }
+      });
+
+    const auto period = std::chrono::duration<double>(1.0 / std::max(0.1, publish_rate_hz_));
+    timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::milliseconds>(period),
+      [this]() { on_timer(); });
+
+    publish_state();
+    RCLCPP_INFO(
+      get_logger(),
+      "map_manager ready (mock). maps_dir=%s state=%s",
+      maps_dir_.c_str(), state_.c_str());
+  }
+
+private:
+  void publish_state()
+  {
+    std_msgs::msg::String msg;
+    msg.data = state_;
+    state_pub_->publish(msg);
+  }
+
+  void set_state(const std::string & next)
+  {
+    if (state_ == next) {
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "state: %s -> %s", state_.c_str(), next.c_str());
+    state_ = next;
+    publish_state();
+  }
+
+  void handle_command(const std::string & raw)
+  {
+    const auto cmd = trim_copy(raw);
+    if (cmd.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (cmd == "start") {
+      if (state_ != "idle") {
+        RCLCPP_WARN(get_logger(), "start ignored in state=%s", state_.c_str());
+        return;
+      }
+      start_mock_mapping();
+      set_state("mapping");
+      return;
+    }
+
+    if (cmd == "stop") {
+      if (state_ != "mapping" && state_ != "navigation") {
+        RCLCPP_WARN(get_logger(), "stop ignored in state=%s", state_.c_str());
+        return;
+      }
+      set_state("terminating");
+      // Finish on next timer tick so UI can show terminating briefly.
+      stop_requested_ = true;
+      return;
+    }
+
+    if (cmd.rfind("save ", 0) == 0) {
+      const auto name = trim_copy(cmd.substr(5));
+      if (!axion_slam::is_valid_map_name(name)) {
+        RCLCPP_ERROR(get_logger(), "invalid map name: '%s'", name.c_str());
+        return;
+      }
+      if (state_ != "mapping" || !has_map_) {
+        RCLCPP_WARN(get_logger(), "save ignored (need mapping + map)");
+        return;
+      }
+      std::string error;
+      const auto paths = axion_slam::make_map_paths(maps_dir_, name);
+      if (!axion_slam::save_occupancy_grid(current_map_, paths, error)) {
+        RCLCPP_ERROR(get_logger(), "save failed: %s", error.c_str());
+        return;
+      }
+      RCLCPP_INFO(get_logger(), "saved map '%s' -> %s", name.c_str(), paths.yaml_path.c_str());
+      // Keep mapping running after save (console stays on save button while mapping).
+      return;
+    }
+
+    if (cmd.rfind("load ", 0) == 0) {
+      const auto name = trim_copy(cmd.substr(5));
+      if (!axion_slam::is_valid_map_name(name)) {
+        RCLCPP_ERROR(get_logger(), "invalid map name: '%s'", name.c_str());
+        return;
+      }
+      if (state_ != "idle") {
+        RCLCPP_WARN(get_logger(), "load ignored in state=%s", state_.c_str());
+        return;
+      }
+      nav_msgs::msg::OccupancyGrid loaded;
+      std::string error;
+      const auto paths = axion_slam::make_map_paths(maps_dir_, name);
+      if (!axion_slam::load_occupancy_grid(paths, loaded, error)) {
+        RCLCPP_ERROR(get_logger(), "load failed: %s", error.c_str());
+        return;
+      }
+      current_map_ = loaded;
+      current_map_.header.frame_id = "map";
+      has_map_ = true;
+      mapping_tick_ = 0;
+      publish_map_locked();
+      RCLCPP_INFO(get_logger(), "loaded map '%s'", name.c_str());
+      return;
+    }
+
+    RCLCPP_WARN(get_logger(), "unknown map_command: '%s'", cmd.c_str());
+  }
+
+  void start_mock_mapping()
+  {
+    mapping_tick_ = 0;
+    has_map_ = true;
+    current_map_ = make_blank_mock_map();
+    paint_mock_room(current_map_, /*reveal_ratio=*/0.15);
+    publish_map_locked();
+  }
+
+  nav_msgs::msg::OccupancyGrid make_blank_mock_map() const
+  {
+    nav_msgs::msg::OccupancyGrid grid;
+    grid.header.frame_id = "map";
+    grid.info.resolution = static_cast<float>(mock_resolution_);
+    grid.info.width = static_cast<uint32_t>(mock_width_);
+    grid.info.height = static_cast<uint32_t>(mock_height_);
+    grid.info.origin.position.x = -0.5 * mock_width_ * mock_resolution_;
+    grid.info.origin.position.y = -0.5 * mock_height_ * mock_resolution_;
+    grid.info.origin.orientation.w = 1.0;
+    grid.data.assign(static_cast<size_t>(mock_width_ * mock_height_), static_cast<int8_t>(-1));
+    return grid;
+  }
+
+  /** Paint a rectangular room; reveal_ratio in (0,1] controls how much is "explored". */
+  void paint_mock_room(nav_msgs::msg::OccupancyGrid & grid, double reveal_ratio) const
+  {
+    const int w = static_cast<int>(grid.info.width);
+    const int h = static_cast<int>(grid.info.height);
+    const int margin = std::max(4, std::min(w, h) / 10);
+    const double r = std::clamp(reveal_ratio, 0.05, 1.0);
+    const int revealed_w = static_cast<int>(std::lround((w - 2 * margin) * r));
+    const int revealed_h = static_cast<int>(std::lround((h - 2 * margin) * r));
+
+    auto idx = [w](int x, int y) {
+        return static_cast<size_t>(y * w + x);
+      };
+
+    // Clear revealed free space
+    for (int y = margin; y < margin + revealed_h && y < h - margin; ++y) {
+      for (int x = margin; x < margin + revealed_w && x < w - margin; ++x) {
+        grid.data[idx(x, y)] = 0;
+      }
+    }
+
+    // Outer walls of full room (only where revealed so far)
+    auto maybe_wall = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= w || y >= h) {
+          return;
+        }
+        if (x > margin + revealed_w || y > margin + revealed_h) {
+          return;
+        }
+        grid.data[idx(x, y)] = 100;
+      };
+
+    for (int x = margin; x <= margin + revealed_w && x < w - margin; ++x) {
+      maybe_wall(x, margin);
+      if (revealed_h >= (h - 2 * margin)) {
+        maybe_wall(x, h - margin - 1);
+      }
+    }
+    for (int y = margin; y <= margin + revealed_h && y < h - margin; ++y) {
+      maybe_wall(margin, y);
+      if (revealed_w >= (w - 2 * margin)) {
+        maybe_wall(w - margin - 1, y);
+      }
+    }
+
+    // Interior pillar once mostly revealed
+    if (r > 0.55) {
+      const int cx = w / 2;
+      const int cy = h / 2;
+      for (int y = cy - 3; y <= cy + 3; ++y) {
+        for (int x = cx - 3; x <= cx + 3; ++x) {
+          if (x >= 0 && y >= 0 && x < w && y < h) {
+            grid.data[idx(x, y)] = 100;
+          }
+        }
+      }
+    }
+  }
+
+  void publish_map_locked()
+  {
+    if (!has_map_) {
+      return;
+    }
+    current_map_.header.stamp = now();
+    map_pub_->publish(current_map_);
+  }
+
+  void on_timer()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Keep advertising state for late subscribers (rosbridge).
+    publish_state();
+
+    if (state_ == "terminating" && stop_requested_) {
+      has_map_ = false;
+      mapping_tick_ = 0;
+      stop_requested_ = false;
+      set_state("idle");
+      return;
+    }
+
+    if (state_ == "mapping" && has_map_) {
+      ++mapping_tick_;
+      // Grow explored area over ~30 seconds at 2 Hz → ~60 ticks
+      const double ratio = std::min(1.0, 0.15 + mapping_tick_ / 60.0);
+      paint_mock_room(current_map_, ratio);
+      publish_map_locked();
+    } else if (has_map_ && state_ == "idle") {
+      // Republish loaded map occasionally for late subscribers.
+      publish_map_locked();
+    }
+  }
+
+  std::string maps_dir_;
+  std::string map_topic_;
+  double publish_rate_hz_{2.0};
+  int mock_width_{200};
+  int mock_height_{200};
+  double mock_resolution_{0.05};
+
+  std::string state_{"idle"};
+  bool has_map_{false};
+  bool stop_requested_{false};
+  int mapping_tick_{0};
+  nav_msgs::msg::OccupancyGrid current_map_;
+
+  std::mutex mutex_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmd_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr get_maps_srv_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<MapManagerNode>());
+  rclcpp::shutdown();
+  return 0;
+}

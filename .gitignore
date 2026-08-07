@@ -1,3 +1,8 @@
+# Colcon workspace artifacts
+install/
+log/
+build/
+
 # Prerequisites
 *.d
 
