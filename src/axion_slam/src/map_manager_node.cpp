@@ -77,6 +77,8 @@ public:
     cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 2.0);
     pose_rate_hz_ = declare_parameter<double>("pose_rate_hz", 20.0);
+    // 前端摇杆默认角速度很小（如 0.05 rad/s），mock 下放大便于肉眼看见
+    teleop_scale_ = declare_parameter<double>("teleop_scale", 8.0);
     mock_width_ = declare_parameter<int>("mock_width", 200);
     mock_height_ = declare_parameter<int>("mock_height", 200);
     mock_resolution_ = declare_parameter<double>("mock_resolution", 0.05);
@@ -85,8 +87,9 @@ public:
       map_topic_, rclcpp::QoS(1).transient_local());
     // volatile：与 rosbridge 订阅兼容；勿用 transient_local，否则浏览器经常收不到状态
     state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", bridge_pub_qos());
+    // BEST_EFFORT：浏览器经 rosbridge 订阅时常用 sensor QoS，Reliable 会对不上
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
-      "/robot_pose", bridge_pub_qos());
+      "/robot_pose", bridge_sub_qos());
 
     // BEST_EFFORT: browser → rosbridge often cannot match default RELIABLE subscriptions.
     cmd_sub_ = create_subscription<std_msgs::msg::String>(
@@ -96,13 +99,21 @@ public:
         handle_command(msg->data);
       });
 
-    cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      cmd_vel_topic_, bridge_sub_qos(),
-      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+    auto on_cmd_vel = [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         last_cmd_ = *msg;
         last_cmd_time_ = now();
-      });
+        has_cmd_ = true;
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cmd_vel: lin=(%.2f,%.2f) ang.z=%.2f",
+          msg->linear.x, msg->linear.y, msg->angular.z);
+      };
+    cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic_, bridge_sub_qos(), on_cmd_vel);
+    // 部分 rosbridge 对 Twist 使用 Reliable，再挂一路避免收不到
+    cmd_vel_sub_reliable_ = create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic_, bridge_pub_qos(), on_cmd_vel);
 
     get_maps_srv_ = create_service<std_srvs::srv::Trigger>(
       "/get_map_files",
@@ -148,6 +159,7 @@ private:
     pose_y_ = 0.0;
     pose_yaw_ = 0.0;
     last_cmd_ = geometry_msgs::msg::Twist();
+    has_cmd_ = false;
   }
 
   void publish_state()
@@ -360,16 +372,19 @@ private:
     const double dt = 1.0 / std::max(1.0, pose_rate_hz_);
 
     // Stop integrating if cmd_vel goes silent (joystick released).
-    const auto age = (now() - last_cmd_time_).seconds();
-    if (age < 0.5) {
-      const double vx = last_cmd_.linear.x;
-      const double vy = last_cmd_.linear.y;
-      const double wz = last_cmd_.angular.z;
-      const double c = std::cos(pose_yaw_);
-      const double s = std::sin(pose_yaw_);
-      pose_x_ += (c * vx - s * vy) * dt;
-      pose_y_ += (s * vx + c * vy) * dt;
-      pose_yaw_ += wz * dt;
+    if (has_cmd_) {
+      const double age = (now() - last_cmd_time_).seconds();
+      if (age < 0.5) {
+        const double scale = std::max(0.1, teleop_scale_);
+        const double vx = last_cmd_.linear.x * scale;
+        const double vy = last_cmd_.linear.y * scale;
+        const double wz = last_cmd_.angular.z * scale;
+        const double c = std::cos(pose_yaw_);
+        const double s = std::sin(pose_yaw_);
+        pose_x_ += (c * vx - s * vy) * dt;
+        pose_y_ += (s * vx + c * vy) * dt;
+        pose_yaw_ += wz * dt;
+      }
     }
 
     publish_pose_locked();
@@ -405,6 +420,7 @@ private:
   std::string cmd_vel_topic_;
   double publish_rate_hz_{2.0};
   double pose_rate_hz_{20.0};
+  double teleop_scale_{8.0};
   int mock_width_{200};
   int mock_height_{200};
   double mock_resolution_{0.05};
@@ -420,6 +436,7 @@ private:
   double pose_yaw_{0.0};
   geometry_msgs::msg::Twist last_cmd_;
   rclcpp::Time last_cmd_time_{0, 0, RCL_ROS_TIME};
+  bool has_cmd_{false};
   std::string last_cmd_raw_;
   rclcpp::Time last_cmd_handled_time_{0, 0, RCL_ROS_TIME};
 
@@ -429,6 +446,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmd_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_reliable_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr get_maps_srv_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr pose_timer_;

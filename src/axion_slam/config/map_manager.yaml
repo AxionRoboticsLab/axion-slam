@@ -2,6 +2,8 @@
 maps_dir: "~/data/maps"
 map_topic: "/map"
 publish_rate_hz: 2.0
+pose_rate_hz: 20.0
+teleop_scale: 8.0
 mock_width: 200
 mock_height: 200
 mock_resolution: 0.05
