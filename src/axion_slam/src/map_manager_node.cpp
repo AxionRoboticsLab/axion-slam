@@ -1,5 +1,7 @@
 #include "axion_slam/map_io.hpp"
 
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -50,6 +52,17 @@ std::string trim_copy(const std::string & s)
   return s.substr(start, end - start + 1);
 }
 
+/** QoS that matches typical rosbridge_suite publishers (often BEST_EFFORT). */
+rclcpp::QoS bridge_sub_qos()
+{
+  return rclcpp::SensorDataQoS().keep_last(20);
+}
+
+rclcpp::QoS bridge_pub_qos()
+{
+  return rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+}
+
 }  // namespace
 
 class MapManagerNode : public rclcpp::Node
@@ -61,18 +74,34 @@ public:
     maps_dir_ = expand_home_path(
       declare_parameter<std::string>("maps_dir", "~/data/maps"));
     map_topic_ = declare_parameter<std::string>("map_topic", "/map");
+    cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 2.0);
+    pose_rate_hz_ = declare_parameter<double>("pose_rate_hz", 20.0);
     mock_width_ = declare_parameter<int>("mock_width", 200);
     mock_height_ = declare_parameter<int>("mock_height", 200);
     mock_resolution_ = declare_parameter<double>("mock_resolution", 0.05);
 
-    map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic_, rclcpp::QoS(1).transient_local());
-    state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", 10);
+    map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+      map_topic_, rclcpp::QoS(1).transient_local());
+    // volatile：与 rosbridge 订阅兼容；勿用 transient_local，否则浏览器经常收不到状态
+    state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", bridge_pub_qos());
+    pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/robot_pose", bridge_pub_qos());
 
+    // BEST_EFFORT: browser → rosbridge often cannot match default RELIABLE subscriptions.
     cmd_sub_ = create_subscription<std_msgs::msg::String>(
-      "/map_command", 10,
+      "/map_command", bridge_sub_qos(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
+        RCLCPP_INFO(get_logger(), "map_command: '%s'", msg->data.c_str());
         handle_command(msg->data);
+      });
+
+    cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic_, bridge_sub_qos(),
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_cmd_ = *msg;
+        last_cmd_time_ = now();
       });
 
     get_maps_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -94,11 +123,17 @@ public:
         }
       });
 
-    const auto period = std::chrono::duration<double>(1.0 / std::max(0.1, publish_rate_hz_));
+    const auto map_period = std::chrono::duration<double>(1.0 / std::max(0.1, publish_rate_hz_));
     timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::milliseconds>(period),
+      std::chrono::duration_cast<std::chrono::milliseconds>(map_period),
       [this]() { on_timer(); });
 
+    const auto pose_period = std::chrono::duration<double>(1.0 / std::max(1.0, pose_rate_hz_));
+    pose_timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::milliseconds>(pose_period),
+      [this]() { on_pose_timer(); });
+
+    reset_pose();
     publish_state();
     RCLCPP_INFO(
       get_logger(),
@@ -107,6 +142,14 @@ public:
   }
 
 private:
+  void reset_pose()
+  {
+    pose_x_ = 0.0;
+    pose_y_ = 0.0;
+    pose_yaw_ = 0.0;
+    last_cmd_ = geometry_msgs::msg::Twist();
+  }
+
   void publish_state()
   {
     std_msgs::msg::String msg;
@@ -133,6 +176,14 @@ private:
 
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // 前端/桥接偶发连发两条相同命令，短窗口内去重
+    const auto now_time = now();
+    if (cmd == last_cmd_raw_ && (now_time - last_cmd_handled_time_).seconds() < 0.3) {
+      return;
+    }
+    last_cmd_raw_ = cmd;
+    last_cmd_handled_time_ = now_time;
+
     if (cmd == "start") {
       if (state_ != "idle") {
         RCLCPP_WARN(get_logger(), "start ignored in state=%s", state_.c_str());
@@ -149,7 +200,6 @@ private:
         return;
       }
       set_state("terminating");
-      // Finish on next timer tick so UI can show terminating briefly.
       stop_requested_ = true;
       return;
     }
@@ -171,7 +221,6 @@ private:
         return;
       }
       RCLCPP_INFO(get_logger(), "saved map '%s' -> %s", name.c_str(), paths.yaml_path.c_str());
-      // Keep mapping running after save (console stays on save button while mapping).
       return;
     }
 
@@ -208,6 +257,7 @@ private:
   {
     mapping_tick_ = 0;
     has_map_ = true;
+    reset_pose();
     current_map_ = make_blank_mock_map();
     paint_mock_room(current_map_, /*reveal_ratio=*/0.15);
     publish_map_locked();
@@ -227,7 +277,6 @@ private:
     return grid;
   }
 
-  /** Paint a rectangular room; reveal_ratio in (0,1] controls how much is "explored". */
   void paint_mock_room(nav_msgs::msg::OccupancyGrid & grid, double reveal_ratio) const
   {
     const int w = static_cast<int>(grid.info.width);
@@ -241,14 +290,12 @@ private:
         return static_cast<size_t>(y * w + x);
       };
 
-    // Clear revealed free space
     for (int y = margin; y < margin + revealed_h && y < h - margin; ++y) {
       for (int x = margin; x < margin + revealed_w && x < w - margin; ++x) {
         grid.data[idx(x, y)] = 0;
       }
     }
 
-    // Outer walls of full room (only where revealed so far)
     auto maybe_wall = [&](int x, int y) {
         if (x < 0 || y < 0 || x >= w || y >= h) {
           return;
@@ -272,7 +319,6 @@ private:
       }
     }
 
-    // Interior pillar once mostly revealed
     if (r > 0.55) {
       const int cx = w / 2;
       const int cy = h / 2;
@@ -295,36 +341,70 @@ private:
     map_pub_->publish(current_map_);
   }
 
+  void publish_pose_locked()
+  {
+    geometry_msgs::msg::PoseStamped msg;
+    msg.header.stamp = now();
+    msg.header.frame_id = "map";
+    msg.pose.position.x = pose_x_;
+    msg.pose.position.y = pose_y_;
+    msg.pose.position.z = 0.0;
+    msg.pose.orientation.z = std::sin(pose_yaw_ * 0.5);
+    msg.pose.orientation.w = std::cos(pose_yaw_ * 0.5);
+    pose_pub_->publish(msg);
+  }
+
+  void on_pose_timer()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const double dt = 1.0 / std::max(1.0, pose_rate_hz_);
+
+    // Stop integrating if cmd_vel goes silent (joystick released).
+    const auto age = (now() - last_cmd_time_).seconds();
+    if (age < 0.5) {
+      const double vx = last_cmd_.linear.x;
+      const double vy = last_cmd_.linear.y;
+      const double wz = last_cmd_.angular.z;
+      const double c = std::cos(pose_yaw_);
+      const double s = std::sin(pose_yaw_);
+      pose_x_ += (c * vx - s * vy) * dt;
+      pose_y_ += (s * vx + c * vy) * dt;
+      pose_yaw_ += wz * dt;
+    }
+
+    publish_pose_locked();
+  }
+
   void on_timer()
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Keep advertising state for late subscribers (rosbridge).
-    publish_state();
+    // 不再每 tick 广播 idle，避免把前端刚切到的 mapping「闪回」成 idle
 
     if (state_ == "terminating" && stop_requested_) {
       has_map_ = false;
       mapping_tick_ = 0;
       stop_requested_ = false;
+      reset_pose();
       set_state("idle");
       return;
     }
 
     if (state_ == "mapping" && has_map_) {
       ++mapping_tick_;
-      // Grow explored area over ~30 seconds at 2 Hz → ~60 ticks
       const double ratio = std::min(1.0, 0.15 + mapping_tick_ / 60.0);
       paint_mock_room(current_map_, ratio);
       publish_map_locked();
     } else if (has_map_ && state_ == "idle") {
-      // Republish loaded map occasionally for late subscribers.
       publish_map_locked();
     }
   }
 
   std::string maps_dir_;
   std::string map_topic_;
+  std::string cmd_vel_topic_;
   double publish_rate_hz_{2.0};
+  double pose_rate_hz_{20.0};
   int mock_width_{200};
   int mock_height_{200};
   double mock_resolution_{0.05};
@@ -335,12 +415,23 @@ private:
   int mapping_tick_{0};
   nav_msgs::msg::OccupancyGrid current_map_;
 
+  double pose_x_{0.0};
+  double pose_y_{0.0};
+  double pose_yaw_{0.0};
+  geometry_msgs::msg::Twist last_cmd_;
+  rclcpp::Time last_cmd_time_{0, 0, RCL_ROS_TIME};
+  std::string last_cmd_raw_;
+  rclcpp::Time last_cmd_handled_time_{0, 0, RCL_ROS_TIME};
+
   std::mutex mutex_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmd_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr get_maps_srv_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr pose_timer_;
 };
 
 int main(int argc, char ** argv)
