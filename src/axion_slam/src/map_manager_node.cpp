@@ -271,7 +271,7 @@ private:
     has_map_ = true;
     reset_pose();
     current_map_ = make_blank_mock_map();
-    paint_mock_room(current_map_, /*reveal_ratio=*/0.15);
+    paint_mock_room(current_map_, /*reveal_ratio=*/1.0);
     publish_map_locked();
   }
 
@@ -381,10 +381,21 @@ private:
         const double wz = last_cmd_.angular.z * scale;
         const double c = std::cos(pose_yaw_);
         const double s = std::sin(pose_yaw_);
-        pose_x_ += (c * vx - s * vy) * dt;
-        pose_y_ += (s * vx + c * vy) * dt;
-        pose_yaw_ += wz * dt;
+      pose_x_ += (c * vx - s * vy) * dt;
+      pose_y_ += (s * vx + c * vy) * dt;
+      pose_yaw_ += wz * dt;
+
+      // 限制在地图范围内，避免箭头跑出画板
+      if (has_map_) {
+        const double pad = mock_resolution_ * 3.0;
+        const double min_x = current_map_.info.origin.position.x + pad;
+        const double min_y = current_map_.info.origin.position.y + pad;
+        const double max_x = min_x + current_map_.info.width * current_map_.info.resolution - 2 * pad;
+        const double max_y = min_y + current_map_.info.height * current_map_.info.resolution - 2 * pad;
+        pose_x_ = std::clamp(pose_x_, min_x, max_x);
+        pose_y_ = std::clamp(pose_y_, min_y, max_y);
       }
+    }
     }
 
     publish_pose_locked();
@@ -407,8 +418,8 @@ private:
 
     if (state_ == "mapping" && has_map_) {
       ++mapping_tick_;
-      const double ratio = std::min(1.0, 0.15 + mapping_tick_ / 60.0);
-      paint_mock_room(current_map_, ratio);
+      // 已全图展示，保持完整房间（可选轻微噪声可后续加）
+      paint_mock_room(current_map_, 1.0);
       publish_map_locked();
     } else if (has_map_ && state_ == "idle") {
       publish_map_locked();
