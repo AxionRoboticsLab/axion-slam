@@ -107,6 +107,22 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 # 依赖示例（主机已装 Humble）
 sudo apt install ros-humble-rosbridge-suite ros-humble-slam-toolbox
 
+# 启动
+source /opt/ros/humble/setup.bash
+
+# 默认监听 0.0.0.0:9090
+ros2 launch rosbridge_server rosbridge_websocket_launch.xm
+
+# 只给本机 Nginx 反代用(更安全,推荐)
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=127.0.0.1 port:=9090
+
+# 后台启动
+nohup ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=127.0.0.1 port:=9090 > ~/rosbridge.log 2>&1 &
+
+# 验证端口启动
+ss -lntp | grep 9090
+ros2 node list | grep -i rosbridge
+
 # 工作空间编译（示意）
 cd ~/ws && colcon build --packages-select axion_slam
 source install/setup.bash
