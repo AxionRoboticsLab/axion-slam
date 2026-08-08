@@ -52,10 +52,11 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 
 | 接口 | 类型 | 说明 |
 |------|------|------|
-| `/map_command` | `std_msgs/String` | `start` · `save <name>` · `load <name>` · `stop` |
+| `/map_command` | `std_msgs/String` | `start` · `save <name>` · `load <name>` · `stop` · `list` |
 | `/map_state` | `std_msgs/String` | 当前状态字符串 |
 | `/map` | `nav_msgs/OccupancyGrid` | 栅格地图（建图实时 / 载图静态） |
-| `/get_map_files` | `std_srvs/srv/Trigger` | `message` 为地图逻辑名列表（逗号分隔） |
+| `/map_file_list` | `std_msgs/String` | `list` 命令回复：逻辑名逗号分隔（推荐前端用此路径） |
+| `/get_map_files` | `std_srvs/srv/Trigger` | `message` 为地图逻辑名列表（逗号分隔；rosbridge 上偶发超时） |
 
 ### 地图命名与文件
 

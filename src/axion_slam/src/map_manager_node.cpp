@@ -95,6 +95,8 @@ public:
       map_topic_, rclcpp::QoS(1).transient_local());
     // volatile：与 rosbridge 订阅兼容；勿用 transient_local，否则浏览器经常收不到状态
     state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", bridge_pub_qos());
+    // 地图列表：话题路径比 rosbridge call_service 更稳（浏览器侧常用）
+    map_list_pub_ = create_publisher<std_msgs::msg::String>("/map_file_list", bridge_pub_qos());
     // BEST_EFFORT：浏览器经 rosbridge 订阅时常用 sensor QoS，Reliable 会对不上
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
       "/robot_pose", bridge_sub_qos());
@@ -129,17 +131,12 @@ public:
         const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
       {
-        const auto names = axion_slam::list_map_names(maps_dir_);
+        const auto joined = join_map_names();
+        RCLCPP_INFO(
+          get_logger(), "get_map_files maps_dir=%s -> '%s'",
+          maps_dir_.c_str(), joined.c_str());
         response->success = true;
-        if (names.empty()) {
-          response->message = "";
-        } else {
-          response->message = names[0];
-          for (size_t i = 1; i < names.size(); ++i) {
-            response->message += ",";
-            response->message += names[i];
-          }
-        }
+        response->message = joined;
       });
 
     const auto map_period = std::chrono::duration<double>(1.0 / std::max(0.1, publish_rate_hz_));
@@ -203,6 +200,11 @@ private:
     }
     last_cmd_raw_ = cmd;
     last_cmd_handled_time_ = now_time;
+
+    if (cmd == "list") {
+      publish_map_list_locked();
+      return;
+    }
 
     if (cmd == "start") {
       if (state_ != "idle") {
@@ -379,6 +381,30 @@ private:
     }
   }
 
+  std::string join_map_names() const
+  {
+    const auto names = axion_slam::list_map_names(maps_dir_);
+    if (names.empty()) {
+      return "";
+    }
+    std::string joined = names[0];
+    for (size_t i = 1; i < names.size(); ++i) {
+      joined += ",";
+      joined += names[i];
+    }
+    return joined;
+  }
+
+  void publish_map_list_locked()
+  {
+    std_msgs::msg::String msg;
+    msg.data = join_map_names();
+    RCLCPP_INFO(
+      get_logger(), "map_command list maps_dir=%s -> '%s'",
+      maps_dir_.c_str(), msg.data.c_str());
+    map_list_pub_->publish(msg);
+  }
+
   void publish_map_locked()
   {
     if (!has_map_) {
@@ -494,6 +520,7 @@ private:
   std::mutex mutex_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr map_list_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmd_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
