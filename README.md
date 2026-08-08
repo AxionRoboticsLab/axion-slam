@@ -27,7 +27,8 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 
 | 组件 | 职责 |
 |------|------|
-| **axion-slam** | 状态机、`/map_command`、地图文件、启停 SLAM |
+| **axion-slam** | 状态机、`/map_command`、地图文件、启停 SLAM；建图时发布 `/robot_pose` |
+| **axion-nav** | 导航定位与去目标（idle 载图后接管 `/robot_pose`） |
 | **rosbridge_suite** | 浏览器 ↔ ROS 2 网关（apt 安装即可，不必自建 GitHub 项目） |
 | **axion-console** | 2D 控制台：开始建图 / 保存 / 载入 / 停止，渲染 `/map` |
 | **axion-edge-agent** | 本期不参与建图数据面 |
