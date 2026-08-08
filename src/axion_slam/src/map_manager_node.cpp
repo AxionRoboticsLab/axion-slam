@@ -233,6 +233,11 @@ private:
         return;
       }
       RCLCPP_INFO(get_logger(), "saved map '%s' -> %s", name.c_str(), paths.yaml_path.c_str());
+      // 协议：mapping → save → idle；前端靠 /map_state 退出建图 UI
+      has_map_ = false;
+      mapping_tick_ = 0;
+      reset_pose();
+      set_state("idle");
       return;
     }
 
