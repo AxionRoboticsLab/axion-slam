@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -12,6 +12,12 @@ def generate_launch_description():
     rosbridge_address = LaunchConfiguration('rosbridge_address')
     rosbridge_port = LaunchConfiguration('rosbridge_port')
 
+    fastdds_xml = PathJoinSubstitution([
+        FindPackageShare('axion_slam'),
+        'config',
+        'fastdds_no_shm.xml',
+    ])
+
     rosbridge_launch = PathJoinSubstitution([
         FindPackageShare('rosbridge_server'),
         'launch',
@@ -19,6 +25,8 @@ def generate_launch_description():
     ])
 
     return LaunchDescription([
+        # 云 VM / 受限 /dev/shm 下禁用 FastDDS SHM，避免 RTPS_TRANSPORT_SHM Error
+        SetEnvironmentVariable(name='FASTRTPS_DEFAULT_PROFILES_FILE', value=fastdds_xml),
         DeclareLaunchArgument(
             'maps_dir',
             default_value='~/data/maps',

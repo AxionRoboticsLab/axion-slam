@@ -146,6 +146,21 @@ ros2 launch axion_slam bringup.launch.py rosbridge_address:=127.0.0.1
 ros2 launch axion_slam mock.launch.py
 ```
 
+launch 已默认加载 `config/fastdds_no_shm.xml`（禁用 FastDDS 共享内存，仅 UDP），避免云主机上常见的：
+
+```text
+[RTPS_TRANSPORT_SHM Error] Failed init_port fastrtps_portXXXX: open_and_lock_file failed
+```
+
+若仍看到该日志（未走本仓库 launch、或旧 install）：
+
+```bash
+# 临时：清残留锁 + 强制 UDP 配置
+rm -f /dev/shm/fastrtps*
+export FASTRTPS_DEFAULT_PROFILES_FILE=$(ros2 pkg prefix axion_slam)/share/axion_slam/config/fastdds_no_shm.xml
+ros2 launch axion_slam bringup.launch.py
+```
+
 ### 命令行冒烟（无需浏览器）
 
 ```bash
