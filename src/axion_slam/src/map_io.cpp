@@ -44,9 +44,22 @@ uint8_t occupancy_to_pgm(int8_t cell)
 
 int8_t pgm_to_occupancy(uint8_t pixel, double occupied_thresh, double free_thresh, bool negate)
 {
+  // 本仓库 occupancy_to_pgm 写入：0→占用, 205→未知, 254→空闲
+  // 先按离散值识别，避免阈值把 254 误判成占用
+  if (!negate) {
+    if (pixel >= 250) {
+      return 0;  // free (254)
+    }
+    if (pixel <= 25) {
+      return 100;  // occupied (0)
+    }
+    if (pixel >= 180 && pixel <= 230) {
+      return -1;  // unknown (205)
+    }
+  }
+
   // 与 ROS map_server / nav2 一致：negate=0 时黑=占用、白=空闲
-  // occ_prob 越高越可能是障碍；不能把 pixel/255 直接当占用概率
-  double occ = negate
+  const double occ = negate
     ? (static_cast<double>(pixel) / 255.0)
     : (static_cast<double>(255 - pixel) / 255.0);
   if (occ > occupied_thresh) {

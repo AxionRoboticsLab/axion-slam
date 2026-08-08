@@ -273,8 +273,24 @@ private:
       current_map_.header.frame_id = "map";
       has_map_ = true;
       mapping_tick_ = 0;
+      {
+        size_t n_free = 0, n_occ = 0, n_unk = 0;
+        for (const auto cell : current_map_.data) {
+          if (cell < 0) {
+            ++n_unk;
+          } else if (cell == 0) {
+            ++n_free;
+          } else {
+            ++n_occ;
+          }
+        }
+        RCLCPP_INFO(
+          get_logger(),
+          "loaded map '%s' %ux%u cells free=%zu occ=%zu unk=%zu -> publishing /map",
+          name.c_str(), current_map_.info.width, current_map_.info.height,
+          n_free, n_occ, n_unk);
+      }
       publish_map_locked();
-      RCLCPP_INFO(get_logger(), "loaded map '%s'", name.c_str());
       return;
     }
 
