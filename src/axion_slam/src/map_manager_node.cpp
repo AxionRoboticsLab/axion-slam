@@ -340,7 +340,7 @@ private:
     for (int y = margin; y < margin + revealed_h && y < h - margin; ++y) {
       for (int x = margin; x < margin + revealed_w && x < w - margin; ++x) {
         // 空闲区画浅色格线，前端能看出「栅格」而不只是一片白
-        const on_grid = (x - margin) % 10 == 0 || (y - margin) % 10 == 0;
+        const bool on_grid = (x - margin) % 10 == 0 || (y - margin) % 10 == 0;
         grid.data[idx(x, y)] = static_cast<int8_t>(on_grid ? 18 : 0);
       }
     }
