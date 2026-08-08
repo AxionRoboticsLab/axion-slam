@@ -95,8 +95,8 @@ public:
       map_topic_, rclcpp::QoS(1).transient_local());
     // volatile：与 rosbridge 订阅兼容；勿用 transient_local，否则浏览器经常收不到状态
     state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", bridge_pub_qos());
-    // 地图列表：话题路径比 rosbridge call_service 更稳（浏览器侧常用）
-    map_list_pub_ = create_publisher<std_msgs::msg::String>("/map_file_list", bridge_pub_qos());
+    // 地图列表：话题路径比 rosbridge call_service 更稳；BEST_EFFORT 对齐浏览器订阅
+    map_list_pub_ = create_publisher<std_msgs::msg::String>("/map_file_list", bridge_sub_qos());
     // BEST_EFFORT：浏览器经 rosbridge 订阅时常用 sensor QoS，Reliable 会对不上
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
       "/robot_pose", bridge_sub_qos());
