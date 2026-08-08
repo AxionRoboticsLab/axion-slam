@@ -60,10 +60,17 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 ### 地图命名与文件
 
 - 逻辑名：仅英文，`^[A-Za-z][A-Za-z0-9_]{0,31}$`
-- 目录：`~/data/maps/`（可用参数 `maps_dir` 覆盖）
+- 目录：运行 `map_manager` 进程的机器上 `~/data/maps/`（展开后一般为 `/home/<user>/data/maps`；可用参数 `maps_dir` 覆盖）
 - 文件：`{name}_2dmap.pgm`、`{name}_2dmap.yaml`
+- **不是**写在浏览器/前端仓库里；Docker 部署时在**容器内**该路径（需挂载卷才能在宿主机看到）
 
 示例：`save office_01` → `~/data/maps/office_01_2dmap.pgm` + `.yaml`
+
+自检：
+```bash
+ls ~/data/maps/
+ros2 service call /get_map_files std_srvs/srv/Trigger {}
+```
 
 ---
 

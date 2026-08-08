@@ -30,14 +30,22 @@ std::string expand_home_path(const std::string & path)
   if (!home) {
     home = std::getenv("USERPROFILE");
   }
+  // Docker/systemd 里偶发无 HOME：勿把字面量 "~/..." 当路径（会写到奇怪相对目录）
+  std::string home_str;
   if (!home) {
-    return path;
+#ifdef _WIN32
+    home_str = "C:/axion/data";
+#else
+    home_str = "/var/tmp/axion";
+#endif
+  } else {
+    home_str = home;
   }
   if (path.size() == 1) {
-    return std::string(home);
+    return home_str;
   }
   if (path[1] == '/' || path[1] == '\\') {
-    return std::string(home) + path.substr(1);
+    return home_str + path.substr(1);
   }
   return path;
 }
@@ -232,7 +240,10 @@ private:
         RCLCPP_ERROR(get_logger(), "save failed: %s", error.c_str());
         return;
       }
-      RCLCPP_INFO(get_logger(), "saved map '%s' -> %s", name.c_str(), paths.yaml_path.c_str());
+      RCLCPP_INFO(
+        get_logger(),
+        "saved map '%s' -> %s (+ %s)  [maps_dir=%s]",
+        name.c_str(), paths.yaml_path.c_str(), paths.pgm_path.c_str(), maps_dir_.c_str());
       // 协议：mapping → save → idle；前端靠 /map_state 退出建图 UI
       has_map_ = false;
       mapping_tick_ = 0;

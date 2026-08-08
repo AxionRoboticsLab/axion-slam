@@ -44,14 +44,15 @@ uint8_t occupancy_to_pgm(int8_t cell)
 
 int8_t pgm_to_occupancy(uint8_t pixel, double occupied_thresh, double free_thresh, bool negate)
 {
-  double v = static_cast<double>(pixel) / 255.0;
-  if (negate) {
-    v = 1.0 - v;
-  }
-  if (v > occupied_thresh) {
+  // 与 ROS map_server / nav2 一致：negate=0 时黑=占用、白=空闲
+  // occ_prob 越高越可能是障碍；不能把 pixel/255 直接当占用概率
+  double occ = negate
+    ? (static_cast<double>(pixel) / 255.0)
+    : (static_cast<double>(255 - pixel) / 255.0);
+  if (occ > occupied_thresh) {
     return 100;
   }
-  if (v < free_thresh) {
+  if (occ < free_thresh) {
     return 0;
   }
   return -1;
