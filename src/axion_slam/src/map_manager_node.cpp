@@ -273,6 +273,7 @@ private:
       current_map_.header.frame_id = "map";
       has_map_ = true;
       mapping_tick_ = 0;
+      idle_map_pub_ticks_ = 0;
       {
         size_t n_free = 0, n_occ = 0, n_unk = 0;
         for (const auto cell : current_map_.data) {
@@ -336,7 +337,9 @@ private:
 
     for (int y = margin; y < margin + revealed_h && y < h - margin; ++y) {
       for (int x = margin; x < margin + revealed_w && x < w - margin; ++x) {
-        grid.data[idx(x, y)] = 0;
+        // 空闲区画浅色格线，前端能看出「栅格」而不只是一片白
+        const on_grid = (x - margin) % 10 == 0 || (y - margin) % 10 == 0;
+        grid.data[idx(x, y)] = static_cast<int8_t>(on_grid ? 18 : 0);
       }
     }
 
@@ -454,7 +457,11 @@ private:
       paint_mock_room(current_map_, 1.0);
       publish_map_locked();
     } else if (has_map_ && state_ == "idle") {
-      publish_map_locked();
+      // 静态地图不要 2Hz 狂发，否则前端反复换纹理会青/白闪烁；低频保活给晚订阅者
+      ++idle_map_pub_ticks_;
+      if (idle_map_pub_ticks_ == 1 || idle_map_pub_ticks_ % 10 == 0) {
+        publish_map_locked();
+      }
     }
   }
 
@@ -472,6 +479,7 @@ private:
   bool has_map_{false};
   bool stop_requested_{false};
   int mapping_tick_{0};
+  int idle_map_pub_ticks_{0};
   nav_msgs::msg::OccupancyGrid current_map_;
 
   double pose_x_{0.0};
