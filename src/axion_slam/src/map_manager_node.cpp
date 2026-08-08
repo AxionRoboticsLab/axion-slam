@@ -21,55 +21,55 @@ using namespace std::chrono_literals;
 namespace
 {
 
-std::string expand_home_path(const std::string & path)
-{
-  if (path.empty() || path[0] != '~') {
+  std::string expand_home_path(const std::string & path)
+  {
+    if (path.empty() || path[0] != '~') {
+      return path;
+    }
+    const char * home = std::getenv("HOME");
+    if (!home) {
+      home = std::getenv("USERPROFILE");
+    }
+    // Docker/systemd 里偶发无 HOME：勿把字面量 "~/..." 当路径（会写到奇怪相对目录）
+    std::string home_str;
+    if (!home) {
+  #ifdef _WIN32
+      home_str = "C:/axion/data";
+  #else
+      home_str = "/var/tmp/axion";
+  #endif
+    } else {
+      home_str = home;
+    }
+    if (path.size() == 1) {
+      return home_str;
+    }
+    if (path[1] == '/' || path[1] == '\\') {
+      return home_str + path.substr(1);
+    }
     return path;
   }
-  const char * home = std::getenv("HOME");
-  if (!home) {
-    home = std::getenv("USERPROFILE");
-  }
-  // Docker/systemd 里偶发无 HOME：勿把字面量 "~/..." 当路径（会写到奇怪相对目录）
-  std::string home_str;
-  if (!home) {
-#ifdef _WIN32
-    home_str = "C:/axion/data";
-#else
-    home_str = "/var/tmp/axion";
-#endif
-  } else {
-    home_str = home;
-  }
-  if (path.size() == 1) {
-    return home_str;
-  }
-  if (path[1] == '/' || path[1] == '\\') {
-    return home_str + path.substr(1);
-  }
-  return path;
-}
 
-std::string trim_copy(const std::string & s)
-{
-  const auto start = s.find_first_not_of(" \t\r\n");
-  if (start == std::string::npos) {
-    return "";
+  std::string trim_copy(const std::string & s)
+  {
+    const auto start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+      return "";
+    }
+    const auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
   }
-  const auto end = s.find_last_not_of(" \t\r\n");
-  return s.substr(start, end - start + 1);
-}
 
-/** QoS that matches typical rosbridge_suite publishers (often BEST_EFFORT). */
-rclcpp::QoS bridge_sub_qos()
-{
-  return rclcpp::SensorDataQoS().keep_last(20);
-}
+  /** QoS that matches typical rosbridge_suite publishers (often BEST_EFFORT). */
+  rclcpp::QoS bridge_sub_qos()
+  {
+    return rclcpp::SensorDataQoS().keep_last(20);
+  }
 
-rclcpp::QoS bridge_pub_qos()
-{
-  return rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-}
+  rclcpp::QoS bridge_pub_qos()
+  {
+    return rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  }
 
 }  // namespace
 
