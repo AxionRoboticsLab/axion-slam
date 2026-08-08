@@ -77,6 +77,16 @@ namespace axion_slam
   {
     MapPaths paths;
     paths.logical_name = logical_name;
+    const fs::path base = fs::path(maps_dir) / logical_name;
+    paths.yaml_path = (base.string() + ".yaml");
+    paths.pgm_path = (base.string() + ".pgm");
+    return paths;
+  }
+
+  MapPaths make_legacy_map_paths(const std::string & maps_dir, const std::string & logical_name)
+  {
+    MapPaths paths;
+    paths.logical_name = logical_name;
     const fs::path base = fs::path(maps_dir) / (logical_name + "_2dmap");
     paths.yaml_path = (base.string() + ".yaml");
     paths.pgm_path = (base.string() + ".pgm");
@@ -85,6 +95,14 @@ namespace axion_slam
 
   bool is_valid_map_name(const std::string & name)
   {
+    // 与 axion-edge-agent / console identity name 一致：3–20，字母开头
+    static const std::regex k_re("^[A-Za-z][A-Za-z0-9_]{2,19}$");
+    return std::regex_match(name, k_re);
+  }
+
+  bool is_legacy_map_name(const std::string & name)
+  {
+    // 载入兼容旧名（如 v1）；新建/保存仍走 is_valid_map_name
     static const std::regex k_re("^[A-Za-z][A-Za-z0-9_]{0,31}$");
     return std::regex_match(name, k_re);
   }
@@ -102,19 +120,34 @@ namespace axion_slam
         continue;
       }
       const auto filename = entry.path().filename().string();
-      const std::string suffix = "_2dmap.yaml";
-      if (filename.size() <= suffix.size() ||
-        filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0)
+      std::string logical;
+      const std::string legacy_suffix = "_2dmap.yaml";
+      if (filename.size() > legacy_suffix.size() &&
+        filename.compare(
+          filename.size() - legacy_suffix.size(), legacy_suffix.size(), legacy_suffix) == 0)
       {
+        logical = filename.substr(0, filename.size() - legacy_suffix.size());
+      } else if (filename.size() > 5 &&
+        filename.compare(filename.size() - 5, 5, ".yaml") == 0)
+      {
+        logical = filename.substr(0, filename.size() - 5);
+        if (logical.size() > 6 &&
+          logical.compare(logical.size() - 6, 6, "_2dmap") == 0)
+        {
+          continue;  // already handled as legacy
+        }
+      } else {
         continue;
       }
-      const std::string logical = filename.substr(0, filename.size() - suffix.size());
-      if (!is_valid_map_name(logical)) {
+      if (!is_valid_map_name(logical) && !is_legacy_map_name(logical)) {
         continue;
       }
       const auto paths = make_map_paths(maps_dir, logical);
-      if (fs::exists(paths.pgm_path)) {
-        names.push_back(logical);
+      const auto legacy = make_legacy_map_paths(maps_dir, logical);
+      if (fs::exists(paths.pgm_path) || fs::exists(legacy.pgm_path)) {
+        if (std::find(names.begin(), names.end(), logical) == names.end()) {
+          names.push_back(logical);
+        }
       }
     }
     std::sort(names.begin(), names.end());

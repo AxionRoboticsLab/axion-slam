@@ -22,7 +22,7 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 [slam_toolbox / mock]       ← 算法或无传感器时的协议桩
         │
         ▼
-~/data/maps/{name}_2dmap.*  ← 地图落在机器（或云开发机）本地
+~/data/maps/{map_name}.*    ← 地图落在机器本地（{name}.pgm/.yaml）
 ```
 
 | 组件 | 职责 |
@@ -56,22 +56,22 @@ Axion 机器人 **2D 建图（SLAM）** 与地图存取服务。基于 **ROS 2 H
 | `/map_command` | `std_msgs/String` | `start` · `save <name>` · `load <name>` · `stop` · `list` |
 | `/map_state` | `std_msgs/String` | 当前状态字符串 |
 | `/map` | `nav_msgs/OccupancyGrid` | 栅格地图（建图实时 / 载图静态） |
-| `/map_file_list` | `std_msgs/String` | `list` 命令回复：逻辑名逗号分隔（推荐前端用此路径） |
-| `/get_map_files` | `std_srvs/srv/Trigger` | `message` 为地图逻辑名列表（逗号分隔；rosbridge 上偶发超时） |
+| `/get_map_files` | `std_srvs/srv/Trigger` | 运维自检用文件列表（业务列表请用 edge-agent `GET /api/maps`） |
+
+> `/map_file_list` 已移除；控制台地图列表走 REST。
 
 ### 地图命名与文件
 
-- 逻辑名：仅英文，`^[A-Za-z][A-Za-z0-9_]{0,31}$`
-- 目录：运行 `map_manager` 进程的机器上 `~/data/maps/`（展开后一般为 `/home/<user>/data/maps`；可用参数 `maps_dir` 覆盖）
-- 文件：`{name}_2dmap.pgm`、`{name}_2dmap.yaml`
-- **不是**写在浏览器/前端仓库里；Docker 部署时在**容器内**该路径（需挂载卷才能在宿主机看到）
+- 逻辑名：与 edge-agent / console 一致，`^[A-Za-z][A-Za-z0-9_]{2,19}$`（3–20 字符）
+- 目录：`~/data/maps/`（参数 `maps_dir` 可覆盖）
+- 文件：`{map_name}.pgm`、`{map_name}.yaml`（仍兼容旧 `{name}_2dmap.*` 载入）
+- **不是**写在浏览器仓库里
 
-示例：`save office_01` → `~/data/maps/office_01_2dmap.pgm` + `.yaml`
+示例：`save office_01` → `~/data/maps/office_01.pgm` + `.yaml`
 
 自检：
 ```bash
 ls ~/data/maps/
-ros2 service call /get_map_files std_srvs/srv/Trigger {}
 ```
 
 ---

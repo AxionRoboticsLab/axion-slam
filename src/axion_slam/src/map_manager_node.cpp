@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -95,9 +96,8 @@ public:
       map_topic_, rclcpp::QoS(1).transient_local());
     // volatile：与 rosbridge 订阅兼容；勿用 transient_local，否则浏览器经常收不到状态
     state_pub_ = create_publisher<std_msgs::msg::String>("/map_state", bridge_pub_qos());
-    // 地图列表：话题路径比 rosbridge call_service 更稳；BEST_EFFORT 对齐浏览器订阅
-    map_list_pub_ = create_publisher<std_msgs::msg::String>("/map_file_list", bridge_sub_qos());
     // BEST_EFFORT：浏览器经 rosbridge 订阅时常用 sensor QoS，Reliable 会对不上
+    // 地图列表改走 edge-agent REST，不再发布 /map_file_list
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
       "/robot_pose", bridge_sub_qos());
 
@@ -202,7 +202,10 @@ private:
     last_cmd_handled_time_ = now_time;
 
     if (cmd == "list") {
-      publish_map_list_locked();
+      // 列表已迁至 edge-agent GET /api/maps；保留命令仅打日志便于运维
+      RCLCPP_INFO(
+        get_logger(), "map_command list (deprecated topic) maps_dir=%s -> '%s'",
+        maps_dir_.c_str(), join_map_names().c_str());
       return;
     }
 
@@ -256,7 +259,7 @@ private:
 
     if (cmd.rfind("load ", 0) == 0) {
       const auto name = trim_copy(cmd.substr(5));
-      if (!axion_slam::is_valid_map_name(name)) {
+      if (!axion_slam::is_valid_map_name(name) && !axion_slam::is_legacy_map_name(name)) {
         RCLCPP_ERROR(get_logger(), "invalid map name: '%s'", name.c_str());
         return;
       }
@@ -266,7 +269,17 @@ private:
       }
       nav_msgs::msg::OccupancyGrid loaded;
       std::string error;
-      const auto paths = axion_slam::make_map_paths(maps_dir_, name);
+      auto paths = axion_slam::make_map_paths(maps_dir_, name);
+      // 兼容旧文件 {name}_2dmap.*
+      if (!std::filesystem::exists(paths.yaml_path) || !std::filesystem::exists(paths.pgm_path)) {
+        const auto legacy_base = std::filesystem::path(maps_dir_) / (name + "_2dmap");
+        if (std::filesystem::exists(legacy_base.string() + ".yaml") &&
+          std::filesystem::exists(legacy_base.string() + ".pgm"))
+        {
+          paths.yaml_path = legacy_base.string() + ".yaml";
+          paths.pgm_path = legacy_base.string() + ".pgm";
+        }
+      }
       if (!axion_slam::load_occupancy_grid(paths, loaded, error)) {
         RCLCPP_ERROR(get_logger(), "load failed: %s", error.c_str());
         return;
@@ -395,16 +408,6 @@ private:
     return joined;
   }
 
-  void publish_map_list_locked()
-  {
-    std_msgs::msg::String msg;
-    msg.data = join_map_names();
-    RCLCPP_INFO(
-      get_logger(), "map_command list maps_dir=%s -> '%s'",
-      maps_dir_.c_str(), msg.data.c_str());
-    map_list_pub_->publish(msg);
-  }
-
   void publish_map_locked()
   {
     if (!has_map_) {
@@ -526,7 +529,6 @@ private:
   std::mutex mutex_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr map_list_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmd_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;

@@ -30,7 +30,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'maps_dir',
             default_value='~/data/maps',
-            description='Directory for {name}_2dmap.pgm/.yaml',
+            description='Directory for {map_name}.pgm/.yaml',
         ),
         DeclareLaunchArgument(
             'map_topic',

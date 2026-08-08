@@ -14,10 +14,12 @@ namespace axion_slam
     std::string logical_name;
   };
 
-  /** Build ~/data/maps/{name}_2dmap.{yaml,pgm} (or override maps_dir). */
+  /** Build ~/data/maps/{name}.{yaml,pgm} (or override maps_dir). */
   MapPaths make_map_paths(const std::string & maps_dir, const std::string & logical_name);
 
   bool is_valid_map_name(const std::string & name);
+  /** 旧地图名（载入兼容，长度可 < 3）。 */
+  bool is_legacy_map_name(const std::string & name);
 
   /** List logical names that have both yaml + pgm under maps_dir. */
   std::vector<std::string> list_map_names(const std::string & maps_dir);
